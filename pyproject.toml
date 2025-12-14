@@ -28,8 +28,8 @@ classifiers = [
     "Topic :: Software Development :: Localization",
 ]
 dependencies = [
-    "openai>=1.0.0",
-    "python-dotenv>=1.0.0",
+    "openai>=2.11.0",
+    "python-dotenv>=1.2.1",
     "pycountry>=24.6.1",
 ]
 
@@ -41,11 +41,12 @@ dev = [
 
 [project.scripts]
 vue-i18n-translate = "vue_i18n_openai_translate.cli:main"
+vue-translate = "vue_i18n_openai_translate.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/jbeeler/vue-i18n-openai-translate"
-Repository = "https://github.com/jbeeler/vue-i18n-openai-translate"
-Issues = "https://github.com/jbeeler/vue-i18n-openai-translate/issues"
+Homepage = "https://github.com/thorrak/vue-i18n-openai-translate"
+Repository = "https://github.com/thorrak/vue-i18n-openai-translate"
+Issues = "https://github.com/thorrak/vue-i18n-openai-translate/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/vue_i18n_openai_translate"]
