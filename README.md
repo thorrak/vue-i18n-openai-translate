@@ -199,6 +199,14 @@ For strings that haven't changed since the last translation:
 - If it differs from the existing translation, GPT-4.1 evaluates both
 - The better translation is kept based on accuracy, naturalness, and consistency
 
+By default, tiebreaker decisions are logged to JSON files in the `tiebreaker_logs/` subdirectory. These logs include the original string, both translation options, and the model's reasoning for each decision. To disable this logging:
+
+```bash
+vue-i18n-translate ./src/locales --no-tiebreaker-log
+```
+
+Note that the reasoning behind the decision is only generated when tiebreaker logging is enabled - disabling logging will reduce API usage at the expense of transparency.
+
 ### Directory Structure
 
 After running, your locales directory will look like:
