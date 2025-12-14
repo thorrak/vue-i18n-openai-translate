@@ -71,6 +71,23 @@ Or create a `.env` file in your working directory:
 OPENAI_API_KEY=your-api-key-here
 ```
 
+### Model Configuration
+
+You can optionally customize which OpenAI models are used for translation:
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `OPENAI_TRANSLATION_MODEL` | Model used for main translation tasks | `gpt-5-mini` |
+| `OPENAI_TIEBREAKER_MODEL` | Model used for tiebreaker decisions | `gpt-5.2` |
+
+Example `.env` file with all options:
+
+```
+OPENAI_API_KEY=your-api-key-here
+OPENAI_TRANSLATION_MODEL=gpt-5-mini
+OPENAI_TIEBREAKER_MODEL=gpt-5.2
+```
+
 ## Usage
 
 ### Basic Usage

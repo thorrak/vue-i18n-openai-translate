@@ -15,6 +15,10 @@ from .utils import detect_target_locales, get_language_name, load_context
 # Load environment variables from .env file
 load_dotenv()
 
+# Model configuration - can be overridden via environment variables or .env file
+TRANSLATION_MODEL = os.environ.get("OPENAI_TRANSLATION_MODEL", "gpt-5-mini")
+TIEBREAKER_MODEL = os.environ.get("OPENAI_TIEBREAKER_MODEL", "gpt-5.2")
+
 
 def _get_client() -> OpenAI:
     """Get OpenAI client, initializing if needed."""
@@ -124,9 +128,8 @@ New {target_language} translation: "{new_translation}"
 
 Which translation is better?"""
 
-    # TODO - Make the tiebreak model (currently "gpt-5.2") configurable from the .env file
     response = client.chat.completions.create(
-        model="gpt-5.2",
+        model=TIEBREAKER_MODEL,
         messages=[
             {"role": "system", "content": system_content},
             {"role": "user", "content": prompt},
@@ -301,9 +304,8 @@ Rules:
 
 {context}"""
 
-    # TODO - Make the main translation model (currently "gpt-5-mini") configurable from the .env file
     response = client.chat.completions.create(
-        model="gpt-5-mini",
+        model=TRANSLATION_MODEL,
         messages=[
             {"role": "system", "content": system_content},
             {"role": "user", "content": prompt},
