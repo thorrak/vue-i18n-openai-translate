@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 from datetime import datetime
 from pathlib import Path
 
 from dotenv import find_dotenv, load_dotenv
-from openai import OpenAI
+from openai import AsyncOpenAI
 
 from .utils import detect_target_locales, get_language_name, load_context
 
@@ -20,15 +21,15 @@ TRANSLATION_MODEL = os.environ.get("OPENAI_TRANSLATION_MODEL", "gpt-5-mini")
 TIEBREAKER_MODEL = os.environ.get("OPENAI_TIEBREAKER_MODEL", "gpt-5.2")
 
 
-def _get_client() -> OpenAI:
-    """Get OpenAI client, initializing if needed."""
+def _get_client() -> AsyncOpenAI:
+    """Get async OpenAI client."""
     api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:
         raise ValueError(
             "OPENAI_API_KEY environment variable not set. "
             "Set it in your environment or in a .env file."
         )
-    return OpenAI(api_key=api_key)
+    return AsyncOpenAI(api_key=api_key)
 
 
 def _generate_schema_from_value(value):
@@ -65,8 +66,8 @@ def _generate_schema_from_value(value):
         return {"type": "string"}
 
 
-def _run_tiebreaker(
-    client: OpenAI,
+async def _run_tiebreaker(
+    client: AsyncOpenAI,
     original_english: str,
     existing_translation: str,
     new_translation: str,
@@ -128,7 +129,7 @@ New {target_language} translation: "{new_translation}"
 
 Which translation is better?"""
 
-    response = client.chat.completions.create(
+    response = await client.chat.completions.create(
         model=TIEBREAKER_MODEL,
         messages=[
             {"role": "system", "content": system_content},
@@ -163,8 +164,8 @@ Which translation is better?"""
     return preferred, tiebreaker_record
 
 
-def _apply_tiebreakers(
-    client: OpenAI,
+async def _apply_tiebreakers(
+    client: AsyncOpenAI,
     new_translation,
     existing_translation,
     source_english,
@@ -199,7 +200,7 @@ def _apply_tiebreakers(
                 else None
             )
 
-            final_value, records = _apply_tiebreakers(
+            final_value, records = await _apply_tiebreakers(
                 client,
                 new_value,
                 existing_value,
@@ -231,7 +232,7 @@ def _apply_tiebreakers(
 
         # Case 3: Unchanged string - run tiebreaker
         if existing_translation is not None and existing_translation != new_translation:
-            preferred, record = _run_tiebreaker(
+            preferred, record = await _run_tiebreaker(
                 client,
                 source_english,
                 existing_translation,
@@ -253,8 +254,8 @@ def _apply_tiebreakers(
         return new_translation, []
 
 
-def _translate_to_language(
-    client: OpenAI,
+async def _translate_to_language(
+    client: AsyncOpenAI,
     english_value,
     target_language: str,
     context: str,
@@ -304,7 +305,7 @@ Rules:
 
 {context}"""
 
-    response = client.chat.completions.create(
+    response = await client.chat.completions.create(
         model=TRANSLATION_MODEL,
         messages=[
             {"role": "system", "content": system_content},
@@ -334,8 +335,8 @@ Rules:
     return parsed
 
 
-def _translate_recursive(
-    client: OpenAI,
+async def _translate_recursive(
+    client: AsyncOpenAI,
     data,
     target_language: str,
     context: str,
@@ -359,12 +360,12 @@ def _translate_recursive(
             )
             try:
                 # Get the new translation
-                new_translation = _translate_to_language(
+                new_translation = await _translate_to_language(
                     client, value, target_language, context, foreign_value
                 )
 
                 # Apply tiebreaker logic
-                final_translation, records = _apply_tiebreakers(
+                final_translation, records = await _apply_tiebreakers(
                     client,
                     new_translation,
                     foreign_value,
@@ -386,10 +387,10 @@ def _translate_recursive(
                 output[key] = value
         return output, all_tiebreaker_records
     elif isinstance(data, str):
-        new_translation = _translate_to_language(
+        new_translation = await _translate_to_language(
             client, data, target_language, context, foreign_translation
         )
-        final_translation, records = _apply_tiebreakers(
+        final_translation, records = await _apply_tiebreakers(
             client,
             new_translation,
             foreign_translation,
@@ -405,25 +406,28 @@ def _translate_recursive(
         return data, []
 
 
-def translate_json_file(
+async def translate_json_file(
+    client: AsyncOpenAI,
     input_file: Path,
     output_file: Path,
     target_language: str,
     context: str = "",
     enable_tiebreaker_logging: bool = True,
-) -> None:
+) -> dict:
     """
     Translate a JSON locale file from English to a target language.
 
     Args:
+        client: AsyncOpenAI client instance
         input_file: Path to the source English JSON file
         output_file: Path to write the translated JSON file
         target_language: Full name of the target language (e.g., 'German')
         context: Optional context string for the translation
         enable_tiebreaker_logging: Whether to log tiebreaker decisions
-    """
-    client = _get_client()
 
+    Returns:
+        Dictionary with translation result info (target_language, output_file, tiebreaker_log_path)
+    """
     with open(input_file, encoding="utf-8") as f:
         data = json.load(f)
 
@@ -448,7 +452,7 @@ def translate_json_file(
             translated_from = json.load(f)
 
     # Translate with tiebreaker logic
-    translated_data, tiebreaker_records = _translate_recursive(
+    translated_data, tiebreaker_records = await _translate_recursive(
         client,
         data,
         target_language,
@@ -468,6 +472,13 @@ def translate_json_file(
     # Write the cached version of the input file
     with open(cached_file_path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
+
+    result = {
+        "target_language": target_language,
+        "output_file": output_file,
+        "tiebreaker_log_path": None,
+        "tiebreaker_count": 0,
+    }
 
     # Write tiebreaker log if enabled and there are records
     if enable_tiebreaker_logging and tiebreaker_records:
@@ -489,12 +500,13 @@ def translate_json_file(
         with open(log_file_path, "w", encoding="utf-8") as f:
             json.dump(log_data, f, ensure_ascii=False, indent=2)
 
-        print(
-            f"  Tiebreaker log written to {log_file_path} ({len(tiebreaker_records)} decisions)"
-        )
+        result["tiebreaker_log_path"] = log_file_path
+        result["tiebreaker_count"] = len(tiebreaker_records)
+
+    return result
 
 
-def translate_locale_directory(
+async def translate_locale_directory(
     locales_dir: Path,
     base_locale: str = "en",
     target_locales: list[str] | None = None,
@@ -504,6 +516,8 @@ def translate_locale_directory(
 ) -> None:
     """
     Translate all locale files in a directory.
+
+    Translations are performed in parallel using asyncio for improved performance.
 
     Args:
         locales_dir: Path to the locales directory
@@ -556,7 +570,13 @@ def translate_locale_directory(
                 print(f"  - {target_code}: {e}")
         return
 
-    # Translate each target locale
+    # Build list of translation tasks
+    translation_tasks = []
+    valid_locales = []
+
+    # Get shared client for all translations
+    client = _get_client()
+
     for target_code in target_locales:
         try:
             target_language = get_language_name(target_code)
@@ -565,15 +585,39 @@ def translate_locale_directory(
             continue
 
         output_file = locales_dir / f"{target_code}.json"
-        print(f"Translating to {target_language} ({target_code})...")
+        valid_locales.append((target_code, target_language))
 
-        translate_json_file(
+        # Create coroutine for this translation
+        task = translate_json_file(
+            client,
             source_file,
             output_file,
             target_language,
             context,
             enable_tiebreaker_logging,
         )
+        translation_tasks.append(task)
 
-        print(f"  Written to {output_file}")
-        print()
+    if not translation_tasks:
+        print("No valid target locales to translate.")
+        return
+
+    # Print what we're translating
+    print(f"Translating to {len(valid_locales)} languages in parallel...")
+    for target_code, target_language in valid_locales:
+        print(f"  - {target_language} ({target_code})")
+    print()
+
+    # Run all translations in parallel
+    results = await asyncio.gather(*translation_tasks, return_exceptions=True)
+
+    # Report results
+    print("Translation results:")
+    for (target_code, target_language), result in zip(valid_locales, results):
+        if isinstance(result, Exception):
+            print(f"  {target_language} ({target_code}): FAILED - {result}")
+        else:
+            print(f"  {target_language} ({target_code}): Written to {result['output_file']}")
+            if result["tiebreaker_log_path"]:
+                print(f"    Tiebreaker log: {result['tiebreaker_log_path']} ({result['tiebreaker_count']} decisions)")
+    print()

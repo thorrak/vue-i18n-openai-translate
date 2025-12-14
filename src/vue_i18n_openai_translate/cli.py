@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import sys
 from pathlib import Path
 
@@ -113,13 +114,15 @@ Environment Variables:
         return 1
 
     try:
-        translate_locale_directory(
-            locales_dir=args.locales_dir,
-            base_locale=args.base_locale,
-            target_locales=args.target_locales,
-            context_file=context_file,
-            enable_tiebreaker_logging=not args.no_tiebreaker_log,
-            dry_run=args.dry_run,
+        asyncio.run(
+            translate_locale_directory(
+                locales_dir=args.locales_dir,
+                base_locale=args.base_locale,
+                target_locales=args.target_locales,
+                context_file=context_file,
+                enable_tiebreaker_logging=not args.no_tiebreaker_log,
+                dry_run=args.dry_run,
+            )
         )
         return 0
     except FileNotFoundError as e:
