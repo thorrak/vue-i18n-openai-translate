@@ -20,6 +20,10 @@ load_dotenv(find_dotenv(usecwd=True))
 TRANSLATION_MODEL = os.environ.get("OPENAI_TRANSLATION_MODEL", "gpt-5-mini")
 TIEBREAKER_MODEL = os.environ.get("OPENAI_TIEBREAKER_MODEL", "gpt-5.2")
 
+# Tiebreak mode configuration
+# Valid values: "tiebreak" (default), "choose_existing", "choose_new"
+TIEBREAK_MODE = os.environ.get("TIEBREAK_MODE", "tiebreak")
+
 
 def _get_client() -> AsyncOpenAI:
     """Get async OpenAI client."""
@@ -173,10 +177,17 @@ async def _apply_tiebreakers(
     target_language: str,
     context: str,
     enable_logging: bool,
+    tiebreak_mode: str = "tiebreak",
     key_path_prefix: str = "",
 ) -> tuple:
     """
     Recursively compare translations and apply tiebreakers where needed.
+
+    Args:
+        tiebreak_mode: One of "tiebreak", "choose_existing", or "choose_new"
+            - "tiebreak": Use AI to determine which translation is better
+            - "choose_existing": Always keep the existing translation
+            - "choose_new": Always use the new translation
 
     Returns a tuple of (final_translation, list of tiebreaker_records).
     """
@@ -209,6 +220,7 @@ async def _apply_tiebreakers(
                 target_language,
                 context,
                 enable_logging,
+                tiebreak_mode,
                 current_path,
             )
             result[key] = final_value
@@ -230,21 +242,27 @@ async def _apply_tiebreakers(
         if source_english != translated_from_english:
             return new_translation, []
 
-        # Case 3: Unchanged string - run tiebreaker
+        # Case 3: Unchanged string - apply tiebreak mode
         if existing_translation is not None and existing_translation != new_translation:
-            preferred, record = await _run_tiebreaker(
-                client,
-                source_english,
-                existing_translation,
-                new_translation,
-                target_language,
-                key_path_prefix,
-                context,
-                enable_logging,
-            )
-            if record:
-                tiebreaker_records.append(record)
-            return preferred, tiebreaker_records
+            if tiebreak_mode == "choose_existing":
+                return existing_translation, []
+            elif tiebreak_mode == "choose_new":
+                return new_translation, []
+            else:
+                # Default "tiebreak" mode - use AI to decide
+                preferred, record = await _run_tiebreaker(
+                    client,
+                    source_english,
+                    existing_translation,
+                    new_translation,
+                    target_language,
+                    key_path_prefix,
+                    context,
+                    enable_logging,
+                )
+                if record:
+                    tiebreaker_records.append(record)
+                return preferred, tiebreaker_records
 
         # If existing and new are the same, just return it
         return new_translation, []
@@ -341,6 +359,7 @@ async def _translate_recursive(
     target_language: str,
     context: str,
     enable_tiebreaker_logging: bool,
+    tiebreak_mode: str = "tiebreak",
     foreign_translation=None,
     translated_from=None,
 ) -> tuple:
@@ -374,6 +393,7 @@ async def _translate_recursive(
                     target_language,
                     context,
                     enable_tiebreaker_logging,
+                    tiebreak_mode,
                     key,
                 )
                 output[key] = final_translation
@@ -399,6 +419,7 @@ async def _translate_recursive(
             target_language,
             context,
             enable_tiebreaker_logging,
+            tiebreak_mode,
             "",
         )
         return final_translation, records
@@ -413,6 +434,7 @@ async def translate_json_file(
     target_language: str,
     context: str = "",
     enable_tiebreaker_logging: bool = True,
+    tiebreak_mode: str = "tiebreak",
 ) -> dict:
     """
     Translate a JSON locale file from English to a target language.
@@ -424,6 +446,7 @@ async def translate_json_file(
         target_language: Full name of the target language (e.g., 'German')
         context: Optional context string for the translation
         enable_tiebreaker_logging: Whether to log tiebreaker decisions
+        tiebreak_mode: One of "tiebreak", "choose_existing", or "choose_new"
 
     Returns:
         Dictionary with translation result info (target_language, output_file, tiebreaker_log_path)
@@ -458,6 +481,7 @@ async def translate_json_file(
         target_language,
         context,
         enable_tiebreaker_logging,
+        tiebreak_mode,
         data_translated,
         translated_from,
     )
@@ -512,6 +536,7 @@ async def translate_locale_directory(
     target_locales: list[str] | None = None,
     context_file: Path | None = None,
     enable_tiebreaker_logging: bool = True,
+    tiebreak_mode: str | None = None,
     dry_run: bool = False,
 ) -> None:
     """
@@ -525,6 +550,8 @@ async def translate_locale_directory(
         target_locales: List of target locale codes, or None to auto-detect
         context_file: Optional path to context JSON file
         enable_tiebreaker_logging: Whether to log tiebreaker decisions
+        tiebreak_mode: One of "tiebreak", "choose_existing", or "choose_new".
+            If None, uses TIEBREAK_MODE environment variable or defaults to "tiebreak"
         dry_run: If True, show what would be translated without making API calls
     """
     locales_dir = Path(locales_dir)
@@ -534,6 +561,15 @@ async def translate_locale_directory(
 
     # Load context
     context = load_context(context_file) if context_file else ""
+
+    # Resolve tiebreak mode: use parameter, fall back to env var, then default
+    resolved_tiebreak_mode = tiebreak_mode if tiebreak_mode is not None else TIEBREAK_MODE
+    valid_modes = ("tiebreak", "choose_existing", "choose_new")
+    if resolved_tiebreak_mode not in valid_modes:
+        raise ValueError(
+            f"Invalid tiebreak mode: '{resolved_tiebreak_mode}'. "
+            f"Valid options are: {', '.join(valid_modes)}"
+        )
 
     # Get source file
     source_file = locales_dir / f"{base_locale}.json"
@@ -553,6 +589,7 @@ async def translate_locale_directory(
     print(f"Base locale: {base_locale}")
     print(f"Target locales: {', '.join(target_locales)}")
     print(f"Source file: {source_file}")
+    print(f"Tiebreak mode: {resolved_tiebreak_mode}")
     if context:
         print("Context: loaded")
     print()
@@ -595,6 +632,7 @@ async def translate_locale_directory(
             target_language,
             context,
             enable_tiebreaker_logging,
+            resolved_tiebreak_mode,
         )
         translation_tasks.append(task)
 

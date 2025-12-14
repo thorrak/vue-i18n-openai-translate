@@ -79,6 +79,12 @@ You can optionally customize which OpenAI models are used for translation:
 |----------|-------------|---------|
 | `OPENAI_TRANSLATION_MODEL` | Model used for main translation tasks | `gpt-5-mini` |
 | `OPENAI_TIEBREAKER_MODEL` | Model used for tiebreaker decisions | `gpt-5.2` |
+| `TIEBREAK_MODE` | How to handle conflicts between existing and new translations | `tiebreak` |
+
+The `TIEBREAK_MODE` variable accepts one of three values:
+- `tiebreak` - Use AI to determine which translation is better (default)
+- `choose_existing` - Always keep the existing translation
+- `choose_new` - Always use the new translation
 
 Example `.env` file with all options:
 
@@ -86,6 +92,7 @@ Example `.env` file with all options:
 OPENAI_API_KEY=your-api-key-here
 OPENAI_TRANSLATION_MODEL=gpt-5-mini
 OPENAI_TIEBREAKER_MODEL=gpt-5.2
+TIEBREAK_MODE=tiebreak
 ```
 
 ## Usage
@@ -141,7 +148,8 @@ vue-i18n-translate ./src/locales --dry-run
 
 ```
 usage: vue-i18n-translate [-h] [-b BASE_LOCALE] [-t CODE] [-c CONTEXT_FILE]
-                          [--no-tiebreaker-log] [--dry-run] [-v]
+                          [--no-tiebreaker-log] [--tiebreak-mode MODE]
+                          [--dry-run] [-v]
                           locales_dir
 
 Translate vue-i18n JSON locale files using OpenAI's API
@@ -158,6 +166,8 @@ options:
   -c, --context-file CONTEXT_FILE
                         Path to JSON file containing translation context
   --no-tiebreaker-log   Disable tiebreaker decision logging
+  --tiebreak-mode MODE  How to handle conflicts: tiebreak (default),
+                        choose_existing, or choose_new
   --dry-run             Show what would be translated without making API calls
   -v, --version         show program's version number and exit
 ```
@@ -194,10 +204,22 @@ The `instructions` field provides general context, while `glossary` defines spec
 
 ### Tiebreaker Logic
 
-For strings that haven't changed since the last translation:
-- The tool generates a new translation
-- If it differs from the existing translation, GPT-4.1 evaluates both
-- The better translation is kept based on accuracy, naturalness, and consistency
+For strings that haven't changed since the last translation, the tool generates a new translation. If it differs from the existing translation, the `--tiebreak-mode` option determines how to resolve the conflict:
+
+- **`tiebreak`** (default): Uses AI to evaluate both translations and choose the better one based on accuracy, naturalness, and consistency
+- **`choose_existing`**: Always keeps the existing translation (useful for preserving manual edits)
+- **`choose_new`**: Always uses the new translation (useful for ensuring consistency with the latest model output)
+
+```bash
+# Use AI tiebreaker (default)
+vue-i18n-translate ./src/locales --tiebreak-mode tiebreak
+
+# Always keep existing translations
+vue-i18n-translate ./src/locales --tiebreak-mode choose_existing
+
+# Always use new translations
+vue-i18n-translate ./src/locales --tiebreak-mode choose_new
+```
 
 By default, tiebreaker decisions are logged to JSON files in the `tiebreaker_logs/` subdirectory. These logs include the original string, both translation options, and the model's reasoning for each decision. To disable this logging:
 
@@ -205,7 +227,7 @@ By default, tiebreaker decisions are logged to JSON files in the `tiebreaker_log
 vue-i18n-translate ./src/locales --no-tiebreaker-log
 ```
 
-Note that the reasoning behind the decision is only generated when tiebreaker logging is enabled - disabling logging will reduce API usage at the expense of transparency.
+Note that the reasoning behind the decision is only generated when tiebreaker logging is enabled - disabling logging will reduce API usage at the expense of transparency. When using `choose_existing` or `choose_new` modes, no tiebreaker API calls are made, which also reduces API usage.
 
 ### Directory Structure
 
@@ -239,6 +261,7 @@ translate_locale_directory(
     base_locale="en",
     target_locales=["de", "fr", "es"],
     context_file=Path("./context.json"),
+    tiebreak_mode="tiebreak",  # or "choose_existing" or "choose_new"
 )
 
 # Or translate a single file
@@ -247,6 +270,7 @@ translate_json_file(
     output_file=Path("./src/locales/de.json"),
     target_language="German",
     context="Domain-specific context here...",
+    tiebreak_mode="choose_existing",
 )
 ```
 

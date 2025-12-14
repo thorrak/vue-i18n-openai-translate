@@ -38,6 +38,7 @@ Examples:
 
 Environment Variables:
   OPENAI_API_KEY    Your OpenAI API key (required)
+  TIEBREAK_MODE     Default tiebreak mode (tiebreak|choose_existing|choose_new)
         """,
     )
 
@@ -81,6 +82,18 @@ Environment Variables:
     )
 
     parser.add_argument(
+        "--tiebreak-mode",
+        type=str,
+        choices=["tiebreak", "choose_existing", "choose_new"],
+        default=None,
+        help="How to handle conflicts between existing and new translations: "
+        "'tiebreak' (default) uses AI to choose the better translation, "
+        "'choose_existing' always keeps the existing translation, "
+        "'choose_new' always uses the new translation. "
+        "Can also be set via TIEBREAK_MODE environment variable.",
+    )
+
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Show what would be translated without making API calls",
@@ -121,6 +134,7 @@ Environment Variables:
                 target_locales=args.target_locales,
                 context_file=context_file,
                 enable_tiebreaker_logging=not args.no_tiebreaker_log,
+                tiebreak_mode=args.tiebreak_mode,
                 dry_run=args.dry_run,
             )
         )
