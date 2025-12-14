@@ -94,9 +94,17 @@ Environment Variables:
         print(f"Error: Directory does not exist: {args.locales_dir}", file=sys.stderr)
         return 1
 
+    # Determine context file: use explicit argument, or default to translation-context.json in locales_dir
+    context_file = args.context_file
+    if context_file is None:
+        default_context = args.locales_dir / "translation-context.json"
+        if default_context.exists():
+            context_file = default_context
+            print(f"Using default context file: {context_file}")
+
     # Validate context file if provided
-    if args.context_file and not args.context_file.exists():
-        print(f"Error: Context file not found: {args.context_file}", file=sys.stderr)
+    if context_file and not context_file.exists():
+        print(f"Error: Context file not found: {context_file}", file=sys.stderr)
         return 1
 
     try:
@@ -104,7 +112,7 @@ Environment Variables:
             locales_dir=args.locales_dir,
             base_locale=args.base_locale,
             target_locales=args.target_locales,
-            context_file=args.context_file,
+            context_file=context_file,
             enable_tiebreaker_logging=not args.no_tiebreaker_log,
             dry_run=args.dry_run,
         )

@@ -119,10 +119,14 @@ vue-i18n-translate ./src/locales --base-locale fr
 
 ### Custom Context File
 
-Provide domain-specific context to improve translation quality:
+Provide domain-specific context to improve translation quality. If a file named `translation-context.json` exists in the locales directory, it will be loaded automatically:
 
 ```bash
-vue-i18n-translate ./src/locales --context-file ./translation-context.json
+# Automatically uses ./src/locales/translation-context.json if it exists
+vue-i18n-translate ./src/locales
+
+# Or specify a custom context file explicitly
+vue-i18n-translate ./src/locales --context-file ./my-context.json
 ```
 
 ### Dry Run
@@ -204,6 +208,7 @@ locales/
 ├── en.json                    # Base locale (source)
 ├── de.json                    # German translation
 ├── fr.json                    # French translation
+├── translation-context.json   # Optional context file (auto-loaded if present)
 ├── translated_from/           # Cache of source strings
 │   ├── de_en.json
 │   └── fr_en.json

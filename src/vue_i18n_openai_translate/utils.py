@@ -50,7 +50,7 @@ def detect_target_locales(directory: Path, base_locale: str) -> list[str]:
     Detect target locales from JSON files in a directory.
 
     Scans the directory for .json files and returns a list of locale codes,
-    excluding the base locale and any files in subdirectories.
+    excluding the base locale, translation-context.json, and any files in subdirectories.
 
     Args:
         directory: Path to the locales directory
@@ -62,10 +62,13 @@ def detect_target_locales(directory: Path, base_locale: str) -> list[str]:
     if not directory.is_dir():
         raise ValueError(f"Directory does not exist: {directory}")
 
+    # Files to exclude from locale detection
+    excluded_files = {base_locale, "translation-context"}
+
     locales = []
     for json_file in directory.glob("*.json"):
         locale_code = json_file.stem
-        if locale_code != base_locale:
+        if locale_code not in excluded_files:
             locales.append(locale_code)
 
     return sorted(locales)
