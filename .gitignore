@@ -713,6 +713,7 @@ cython_debug/
 .env
 .env.local
 
-# Do not commit any generated json files
-*.json
+# uv
+.python-version
+uv.lock
 

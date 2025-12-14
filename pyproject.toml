@@ -1,0 +1,51 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "vue-i18n-openai-translate"
+version = "0.1.0"
+description = "Translate vue-i18n JSON locale files using OpenAI's API with structured outputs"
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.10"
+authors = [
+    { name = "John Beeler" }
+]
+keywords = ["vue-i18n", "translation", "i18n", "localization", "openai", "json"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Internationalization",
+    "Topic :: Software Development :: Localization",
+]
+dependencies = [
+    "openai>=1.0.0",
+    "python-dotenv>=1.0.0",
+    "pycountry>=24.6.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-cov>=4.0.0",
+]
+
+[project.scripts]
+vue-i18n-translate = "vue_i18n_openai_translate.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/jbeeler/vue-i18n-openai-translate"
+Repository = "https://github.com/jbeeler/vue-i18n-openai-translate"
+Issues = "https://github.com/jbeeler/vue-i18n-openai-translate/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/vue_i18n_openai_translate"]
