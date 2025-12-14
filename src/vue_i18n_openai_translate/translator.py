@@ -9,7 +9,7 @@ from datetime import datetime
 from pathlib import Path
 
 from dotenv import find_dotenv, load_dotenv
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, RateLimitError
 
 from .utils import detect_target_locales, get_language_name, load_context
 
@@ -23,6 +23,78 @@ TIEBREAKER_MODEL = os.environ.get("OPENAI_TIEBREAKER_MODEL", "gpt-5.2")
 # Tiebreak mode configuration
 # Valid values: "tiebreak" (default), "choose_existing", "choose_new"
 TIEBREAK_MODE = os.environ.get("TIEBREAK_MODE", "tiebreak")
+
+# Rate limiting configuration
+MAX_CONCURRENT_REQUESTS = int(os.environ.get("MAX_CONCURRENT_REQUESTS", "10"))
+INITIAL_RETRY_DELAY = float(os.environ.get("INITIAL_RETRY_DELAY", "1.0"))
+MAX_BACKOFF_RESETS = int(os.environ.get("MAX_BACKOFF_RESETS", "5"))
+
+# Backoff thresholds (in seconds)
+MAX_DELAY = 64  # Reset backoff after reaching this delay
+RESET_DELAY = 16  # Delay to reset to after hitting MAX_DELAY
+
+# Global semaphore for limiting concurrent API calls (initialized lazily)
+_api_semaphore: asyncio.Semaphore | None = None
+
+
+def _get_semaphore() -> asyncio.Semaphore:
+    """Get or create the global semaphore for rate limiting."""
+    global _api_semaphore
+    if _api_semaphore is None:
+        _api_semaphore = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
+    return _api_semaphore
+
+
+async def _api_call_with_retry(api_call_func, *args, **kwargs):
+    """
+    Execute an API call with rate limiting and exponential backoff retry.
+
+    Backoff pattern: 1 -> 2 -> 4 -> 8 -> 16 -> 32 -> 64 -> 16 -> 32 -> 64 -> ...
+    Resets to 16s after hitting 64s. Times out after MAX_BACKOFF_RESETS resets
+    (approximately 10 minutes with default settings).
+
+    Args:
+        api_call_func: The async function to call
+        *args, **kwargs: Arguments to pass to the function
+
+    Returns:
+        The result of the API call
+
+    Raises:
+        RateLimitError: If all retries are exhausted after MAX_BACKOFF_RESETS resets
+    """
+    semaphore = _get_semaphore()
+    delay = INITIAL_RETRY_DELAY
+    reset_count = 0
+    attempt = 0
+
+    while True:
+        async with semaphore:
+            try:
+                return await api_call_func(*args, **kwargs)
+            except RateLimitError as e:
+                attempt += 1
+
+                # Check if we've exceeded max resets
+                if reset_count >= MAX_BACKOFF_RESETS:
+                    print(f"Rate limit retry timeout after {reset_count} backoff resets (~{MAX_BACKOFF_RESETS * 112}s)")
+                    raise
+
+                # Extract retry-after header if available
+                retry_after = getattr(e, "retry_after", None)
+                if retry_after:
+                    wait_time = float(retry_after)
+                else:
+                    wait_time = delay
+
+                print(f"Rate limited, waiting {wait_time:.1f}s (attempt {attempt}, reset {reset_count}/{MAX_BACKOFF_RESETS})...")
+                await asyncio.sleep(wait_time)
+
+                # Update delay with exponential backoff and reset logic
+                delay *= 2
+                if delay > MAX_DELAY:
+                    delay = RESET_DELAY
+                    reset_count += 1
 
 
 def _get_client() -> AsyncOpenAI:
@@ -133,7 +205,8 @@ New {target_language} translation: "{new_translation}"
 
 Which translation is better?"""
 
-    response = await client.chat.completions.create(
+    response = await _api_call_with_retry(
+        client.chat.completions.create,
         model=TIEBREAKER_MODEL,
         messages=[
             {"role": "system", "content": system_content},
@@ -323,7 +396,8 @@ Rules:
 
 {context}"""
 
-    response = await client.chat.completions.create(
+    response = await _api_call_with_retry(
+        client.chat.completions.create,
         model=TRANSLATION_MODEL,
         messages=[
             {"role": "system", "content": system_content},
@@ -353,6 +427,52 @@ Rules:
     return parsed
 
 
+async def _translate_single_key(
+    client: AsyncOpenAI,
+    key: str,
+    value,
+    target_language: str,
+    context: str,
+    enable_tiebreaker_logging: bool,
+    tiebreak_mode: str,
+    foreign_value,
+    translated_from_value,
+    source_value,
+) -> tuple[str, any, list]:
+    """
+    Translate a single top-level key and apply tiebreakers.
+
+    Returns a tuple of (key, final_translation, tiebreaker_records).
+    """
+    try:
+        # Get the new translation
+        new_translation = await _translate_to_language(
+            client, value, target_language, context, foreign_value
+        )
+
+        # Apply tiebreaker logic
+        final_translation, records = await _apply_tiebreakers(
+            client,
+            new_translation,
+            foreign_value,
+            source_value,
+            translated_from_value,
+            target_language,
+            context,
+            enable_tiebreaker_logging,
+            tiebreak_mode,
+            key,
+        )
+        return key, final_translation, records
+
+    except json.JSONDecodeError as e:
+        print(f"Unable to decode JSON for key '{key}': {e}")
+        return key, value, []
+    except ValueError as e:
+        print(f"Translation error for key '{key}': {e}")
+        return key, value, []
+
+
 async def _translate_recursive(
     client: AsyncOpenAI,
     data,
@@ -366,45 +486,47 @@ async def _translate_recursive(
     """
     Split nested dictionaries at the first level of keys, translate, and apply tiebreakers.
 
+    Translations of top-level keys are performed in parallel for improved performance.
+
     Returns a tuple of (translated_data, list of tiebreaker_records).
     """
     all_tiebreaker_records = []
 
     if isinstance(data, dict):
-        output = {}
+        # Build list of translation tasks for all top-level keys
+        tasks = []
         for key, value in data.items():
             foreign_value = foreign_translation.get(key) if foreign_translation else None
             translated_from_value = (
                 translated_from.get(key) if translated_from else None
             )
-            try:
-                # Get the new translation
-                new_translation = await _translate_to_language(
-                    client, value, target_language, context, foreign_value
-                )
+            task = _translate_single_key(
+                client,
+                key,
+                value,
+                target_language,
+                context,
+                enable_tiebreaker_logging,
+                tiebreak_mode,
+                foreign_value,
+                translated_from_value,
+                value,
+            )
+            tasks.append(task)
 
-                # Apply tiebreaker logic
-                final_translation, records = await _apply_tiebreakers(
-                    client,
-                    new_translation,
-                    foreign_value,
-                    value,
-                    translated_from_value,
-                    target_language,
-                    context,
-                    enable_tiebreaker_logging,
-                    tiebreak_mode,
-                    key,
-                )
-                output[key] = final_translation
-                all_tiebreaker_records.extend(records)
+        # Run all key translations in parallel
+        results = await asyncio.gather(*tasks, return_exceptions=True)
 
-            except json.JSONDecodeError as e:
-                print(f"Unable to decode JSON for key '{key}': {e}")
-                output[key] = value
-            except ValueError as e:
-                print(f"Translation error for key '{key}': {e}")
-                output[key] = value
+        # Collect results
+        output = {}
+        for result in results:
+            if isinstance(result, Exception):
+                print(f"Translation task failed: {result}")
+                continue
+            key, final_translation, records = result
+            output[key] = final_translation
+            all_tiebreaker_records.extend(records)
+
         return output, all_tiebreaker_records
     elif isinstance(data, str):
         new_translation = await _translate_to_language(
