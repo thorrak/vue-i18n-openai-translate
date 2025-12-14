@@ -7,13 +7,13 @@ import os
 from datetime import datetime
 from pathlib import Path
 
-from dotenv import load_dotenv
+from dotenv import find_dotenv, load_dotenv
 from openai import OpenAI
 
 from .utils import detect_target_locales, get_language_name, load_context
 
-# Load environment variables from .env file
-load_dotenv()
+# Load environment variables from .env file in current working directory
+load_dotenv(find_dotenv(usecwd=True))
 
 # Model configuration - can be overridden via environment variables or .env file
 TRANSLATION_MODEL = os.environ.get("OPENAI_TRANSLATION_MODEL", "gpt-5-mini")

@@ -6,7 +6,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from dotenv import load_dotenv
+from dotenv import find_dotenv, load_dotenv
 
 from . import __version__
 from .translator import translate_locale_directory
@@ -14,8 +14,8 @@ from .translator import translate_locale_directory
 
 def main(argv: list[str] | None = None) -> int:
     """Main entry point for the CLI."""
-    # Load environment variables from .env file in current directory
-    load_dotenv()
+    # Load environment variables from .env file in current working directory
+    load_dotenv(find_dotenv(usecwd=True))
 
     parser = argparse.ArgumentParser(
         prog="vue-i18n-translate",
