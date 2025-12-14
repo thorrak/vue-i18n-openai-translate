@@ -711,5 +711,8 @@ cython_debug/
 
 # Do not commit (active) .env file
 .env
+.env.local
 
+# Do not commit any generated json files
+*.json
 
