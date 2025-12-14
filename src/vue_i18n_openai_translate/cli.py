@@ -6,12 +6,17 @@ import argparse
 import sys
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 from . import __version__
 from .translator import translate_locale_directory
 
 
 def main(argv: list[str] | None = None) -> int:
     """Main entry point for the CLI."""
+    # Load environment variables from .env file in current directory
+    load_dotenv()
+
     parser = argparse.ArgumentParser(
         prog="vue-i18n-translate",
         description="Translate vue-i18n JSON locale files using OpenAI's API",
