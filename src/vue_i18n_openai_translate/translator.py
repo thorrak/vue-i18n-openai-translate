@@ -29,6 +29,9 @@ MAX_CONCURRENT_REQUESTS = int(os.environ.get("MAX_CONCURRENT_REQUESTS", "10"))
 INITIAL_RETRY_DELAY = float(os.environ.get("INITIAL_RETRY_DELAY", "1.0"))
 MAX_BACKOFF_RESETS = int(os.environ.get("MAX_BACKOFF_RESETS", "5"))
 
+# Tiebreaker batch size - controls how many tiebreaker API calls run in parallel per language
+TIEBREAKER_BATCH_SIZE = int(os.environ.get("TIEBREAKER_BATCH_SIZE", "10"))
+
 # Backoff thresholds (in seconds)
 MAX_DELAY = 64  # Reset backoff after reaching this delay
 RESET_DELAY = 16  # Delay to reset to after hitting MAX_DELAY
@@ -241,26 +244,148 @@ Which translation is better?"""
     return preferred, tiebreaker_record
 
 
-async def _apply_tiebreakers(
-    client: AsyncOpenAI,
+def _collect_tiebreaker_candidates(
     new_translation,
     existing_translation,
     source_english,
     translated_from_english,
+    key_path_prefix: str = "",
+) -> list[tuple[str, str, str, str]]:
+    """
+    Recursively collect all tiebreaker candidates from the translation tree.
+
+    Returns a list of tuples: (key_path, original_english, existing_translation, new_translation)
+    Only collects candidates where:
+    - The value is a string (leaf node)
+    - Not a reference string (@:...)
+    - The source hasn't changed (source_english == translated_from_english)
+    - The translations differ (existing != new)
+    """
+    candidates = []
+
+    if isinstance(new_translation, dict):
+        for key, new_value in new_translation.items():
+            current_path = f"{key_path_prefix}.{key}" if key_path_prefix else key
+            existing_value = (
+                existing_translation.get(key)
+                if isinstance(existing_translation, dict)
+                else None
+            )
+            source_value = (
+                source_english.get(key) if isinstance(source_english, dict) else None
+            )
+            translated_from_value = (
+                translated_from_english.get(key)
+                if isinstance(translated_from_english, dict)
+                else None
+            )
+
+            nested_candidates = _collect_tiebreaker_candidates(
+                new_value,
+                existing_value,
+                source_value,
+                translated_from_value,
+                current_path,
+            )
+            candidates.extend(nested_candidates)
+
+    elif isinstance(new_translation, str):
+        # Skip reference strings
+        if new_translation.startswith("@:"):
+            return []
+
+        # Skip new strings (not in translated_from)
+        if translated_from_english is None:
+            return []
+
+        # Skip changed strings (source doesn't match translated_from)
+        if source_english != translated_from_english:
+            return []
+
+        # Unchanged string with different translations - this is a tiebreaker candidate
+        if existing_translation is not None and existing_translation != new_translation:
+            candidates.append((
+                key_path_prefix,
+                source_english,
+                existing_translation,
+                new_translation,
+            ))
+
+    return candidates
+
+
+async def _run_tiebreaker_batch(
+    client: AsyncOpenAI,
+    candidates: list[tuple[str, str, str, str]],
     target_language: str,
     context: str,
     enable_logging: bool,
+    batch_size: int,
+) -> dict[str, tuple[str, dict | None]]:
+    """
+    Execute tiebreaker API calls in parallel batches.
+
+    Args:
+        candidates: List of (key_path, original_english, existing_translation, new_translation)
+        batch_size: Number of concurrent API calls per batch
+
+    Returns:
+        Dict mapping key_path -> (preferred_translation, tiebreaker_record or None)
+        On failure, uses existing translation (conservative).
+    """
+    results = {}
+
+    # Process in batches
+    for i in range(0, len(candidates), batch_size):
+        batch = candidates[i:i + batch_size]
+
+        # Create tasks for this batch
+        tasks = [
+            _run_tiebreaker(
+                client,
+                original_english,
+                existing_translation,
+                new_translation,
+                target_language,
+                key_path,
+                context,
+                enable_logging,
+            )
+            for key_path, original_english, existing_translation, new_translation in batch
+        ]
+
+        # Execute batch in parallel
+        batch_results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        # Collect results, handling exceptions conservatively
+        for (key_path, _, existing_translation, _), result in zip(batch, batch_results):
+            if isinstance(result, Exception):
+                # On error, use existing translation (conservative)
+                print(f"Tiebreaker failed for '{key_path}': {result}. Using existing translation.")
+                results[key_path] = (existing_translation, None)
+            else:
+                results[key_path] = result
+
+    return results
+
+
+def _apply_tiebreaker_results(
+    new_translation,
+    existing_translation,
+    source_english,
+    translated_from_english,
+    tiebreaker_results: dict[str, tuple[str, dict | None]],
     tiebreak_mode: str = "tiebreak",
     key_path_prefix: str = "",
 ) -> tuple:
     """
-    Recursively compare translations and apply tiebreakers where needed.
+    Recursively apply pre-computed tiebreaker results to build final translation.
+
+    This is a pure function (no API calls) that uses the results from _run_tiebreaker_batch().
 
     Args:
+        tiebreaker_results: Dict mapping key_path -> (preferred_translation, tiebreaker_record)
         tiebreak_mode: One of "tiebreak", "choose_existing", or "choose_new"
-            - "tiebreak": Use AI to determine which translation is better
-            - "choose_existing": Always keep the existing translation
-            - "choose_new": Always use the new translation
 
     Returns a tuple of (final_translation, list of tiebreaker_records).
     """
@@ -284,15 +409,12 @@ async def _apply_tiebreakers(
                 else None
             )
 
-            final_value, records = await _apply_tiebreakers(
-                client,
+            final_value, records = _apply_tiebreaker_results(
                 new_value,
                 existing_value,
                 source_value,
                 translated_from_value,
-                target_language,
-                context,
-                enable_logging,
+                tiebreaker_results,
                 tiebreak_mode,
                 current_path,
             )
@@ -322,20 +444,15 @@ async def _apply_tiebreakers(
             elif tiebreak_mode == "choose_new":
                 return new_translation, []
             else:
-                # Default "tiebreak" mode - use AI to decide
-                preferred, record = await _run_tiebreaker(
-                    client,
-                    source_english,
-                    existing_translation,
-                    new_translation,
-                    target_language,
-                    key_path_prefix,
-                    context,
-                    enable_logging,
-                )
-                if record:
-                    tiebreaker_records.append(record)
-                return preferred, tiebreaker_records
+                # Default "tiebreak" mode - look up pre-computed result
+                if key_path_prefix in tiebreaker_results:
+                    preferred, record = tiebreaker_results[key_path_prefix]
+                    if record:
+                        tiebreaker_records.append(record)
+                    return preferred, tiebreaker_records
+                else:
+                    # No result found (shouldn't happen), default to existing (conservative)
+                    return existing_translation, []
 
         # If existing and new are the same, just return it
         return new_translation, []
@@ -442,6 +559,8 @@ async def _translate_single_key(
     """
     Translate a single top-level key and apply tiebreakers.
 
+    Tiebreakers are collected and executed in parallel batches for improved performance.
+
     Returns a tuple of (key, final_translation, tiebreaker_records).
     """
     try:
@@ -450,16 +569,34 @@ async def _translate_single_key(
             client, value, target_language, context, foreign_value
         )
 
-        # Apply tiebreaker logic
-        final_translation, records = await _apply_tiebreakers(
-            client,
+        # Collect tiebreaker candidates (no API calls, just tree traversal)
+        candidates = _collect_tiebreaker_candidates(
             new_translation,
             foreign_value,
             source_value,
             translated_from_value,
-            target_language,
-            context,
-            enable_tiebreaker_logging,
+            key,
+        )
+
+        # Execute tiebreakers in parallel batches if there are candidates and mode is "tiebreak"
+        tiebreaker_results = {}
+        if candidates and tiebreak_mode == "tiebreak":
+            tiebreaker_results = await _run_tiebreaker_batch(
+                client,
+                candidates,
+                target_language,
+                context,
+                enable_tiebreaker_logging,
+                TIEBREAKER_BATCH_SIZE,
+            )
+
+        # Apply pre-computed tiebreaker results to build final translation
+        final_translation, records = _apply_tiebreaker_results(
+            new_translation,
+            foreign_value,
+            source_value,
+            translated_from_value,
+            tiebreaker_results,
             tiebreak_mode,
             key,
         )
@@ -532,15 +669,35 @@ async def _translate_recursive(
         new_translation = await _translate_to_language(
             client, data, target_language, context, foreign_translation
         )
-        final_translation, records = await _apply_tiebreakers(
-            client,
+
+        # Collect tiebreaker candidates
+        candidates = _collect_tiebreaker_candidates(
             new_translation,
             foreign_translation,
             data,
             translated_from,
-            target_language,
-            context,
-            enable_tiebreaker_logging,
+            "",
+        )
+
+        # Execute tiebreakers in parallel batches if needed
+        tiebreaker_results = {}
+        if candidates and tiebreak_mode == "tiebreak":
+            tiebreaker_results = await _run_tiebreaker_batch(
+                client,
+                candidates,
+                target_language,
+                context,
+                enable_tiebreaker_logging,
+                TIEBREAKER_BATCH_SIZE,
+            )
+
+        # Apply pre-computed results
+        final_translation, records = _apply_tiebreaker_results(
+            new_translation,
+            foreign_translation,
+            data,
+            translated_from,
+            tiebreaker_results,
             tiebreak_mode,
             "",
         )
